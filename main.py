@@ -5,11 +5,9 @@ from fastapi import FastAPI, Request, Path, APIRouter
 from fastapi.responses import JSONResponse
 from fastapi import Depends, HTTPException, Query
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-
 from DAO import ApcDAO, mermaDAO
 from DAO.mermaDAO import get_motivos_merma, get_productos_catalogo, eliminar_producto_detalle, get_productos_merma, \
     get_mermas_by_sucursales, agregar_producto_detalle, crear_merma_cabecera, get_merma_by_id
-from models.apci_consulta import ApcConsultaResp
 from models.merma import MotivoMermaResponse, MermaResponse, Merma, MermaCreate
 from DAO.ApcDAO import equipos_existen, crear_apci
 from DAO.IncidenciasDAO import list_incidencias
@@ -43,13 +41,14 @@ from fastapi.middleware.cors import CORSMiddleware
 app = FastAPI(title="API Manejo de Valores")
 router = APIRouter(tags=["Estadísticas"])
 
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000",      # Next.js en desarrollo
-        "http://192.168.137.1:3000",  # Next.js en red local
-        "http://127.0.0.1:3000",      # Alternativa localhost
+        "https://localhost:3000",      # Next.js en desarrollo
+        "https://192.168.137.1:3000",  # Next.js en red local
+        "https://127.0.0.1:3000",      # Alternativa localhost
+        "https://192.168.0.101:3000",
+        "www-metpre2.vercel.app"# Tu IP actual para Next.js
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -1054,32 +1053,6 @@ async def obtener_productos_merma(
             "estatus": 0,
             "mensaje": f"Error al obtener productos: {str(e)}",
             "productos": []
-        }
-
-
-@app.delete("/mermas/{merma_id}/productos/{detalle_id}")
-async def eliminar_producto_merma(
-        merma_id: int,
-        detalle_id: int,
-        current=Depends(require_roles())
-):
-    """Eliminar un producto del detalle de merma"""
-    try:
-        success = eliminar_producto_detalle(merma_id, detalle_id)
-        if success:
-            return {
-                "estatus": 1,
-                "mensaje": "Producto eliminado exitosamente"
-            }
-        else:
-            return {
-                "estatus": 0,
-                "mensaje": "No se pudo eliminar el producto"
-            }
-    except Exception as e:
-        return {
-            "estatus": 0,
-            "mensaje": f"Error al eliminar producto: {str(e)}"
         }
 
 

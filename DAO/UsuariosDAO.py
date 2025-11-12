@@ -29,13 +29,22 @@ class UsuarioCreatedOut(BaseModel):
     mensaje: str
     usuario: Dict[str, object]
 
+'mysql+pymysql://ecastillo:Cachopp2@mysql-met.mysql.database.azure.com:3306/scisp'
+
 CFG = dict(
-    host=os.getenv("DB_HOST","localhost"),
-    user=os.getenv("DB_USER","root"),
-    password=os.getenv("DB_PASS","root"),
+    host=os.getenv("DB_HOST","mysql-met.mysql.database.azure.com"),
+    user=os.getenv("DB_USER","ecastillo"),
+    password=os.getenv("DB_PASS","Cachopp2"),
     database=os.getenv("DB_NAME","scisp"),
     autocommit=False
 )
+#CFG = dict(
+ #   host=os.getenv("DB_HOST","localhost"),
+  #  user=os.getenv("DB_USER","root"),
+   # password=os.getenv("DB_PASS","root"),
+    #database=os.getenv("DB_NAME","scisp"),
+    #autocommit=False
+#)
 
 def get_conn():
     return mysql.connect(**CFG)
