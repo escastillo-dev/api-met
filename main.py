@@ -41,23 +41,9 @@ from fastapi.middleware.cors import CORSMiddleware
 app = FastAPI(title="API Manejo de Valores")
 router = APIRouter(tags=["Estadísticas"])
 
-#app.add_middleware(
- #   CORSMiddleware,
-  #  allow_origins=[
-   #     "https://localhost:3000",      # Next.js en desarrollo
-    #    "https://192.168.137.1:3000",  # Next.js en red local
-     #   "https://127.0.0.1:3000",      # Alternativa localhost
-      #  "https://192.168.0.101:3000",
-       # "www-metpre2.vercel.app"
-    #],
-    #allow_credentials=True,
-    #allow_methods=["*"],
-    #allow_headers=["*"],
-#)
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # En producción, especificar dominio
+    allow_origins=["*"],  # Permite cualquier origen para desarrollo y Vercel
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
