@@ -48,7 +48,7 @@ app.add_middleware(
         "https://192.168.137.1:3000",  # Next.js en red local
         "https://127.0.0.1:3000",      # Alternativa localhost
         "https://192.168.0.101:3000",
-        "www-metpre2.vercel.app"# Tu IP actual para Next.js
+        "www-metpre2.vercel.app"
     ],
     allow_credentials=True,
     allow_methods=["*"],
