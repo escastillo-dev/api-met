@@ -4,6 +4,9 @@ from __future__ import annotations
 import mysql.connector as mysql
 import os
 from passlib.hash import bcrypt
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
 # models/usuarios.py
 from typing import Optional, Dict, List, Tuple, Any
 from pydantic import BaseModel, Field, validator
@@ -32,19 +35,14 @@ class UsuarioCreatedOut(BaseModel):
 'mysql+pymysql://ecastillo:Cachopp2@mysql-met.mysql.database.azure.com:3306/scisp'
 
 CFG = dict(
-    host=os.getenv("DB_HOST","mysql-met.mysql.database.azure.com"),
-    user=os.getenv("DB_USER","ecastillo"),
-    password=os.getenv("DB_PASS","Cachopp2"),
-    database=os.getenv("DB_NAME","scisp"),
+    host=os.getenv("DB_HOST"),
+    user=os.getenv("DB_USER"),
+    password=os.getenv("DB_PASS"),
+    database=os.getenv("DB_NAME"),
+    port=int(os.getenv("DB_PORT", 3306)),
     autocommit=False
 )
-#CFG = dict(
- #   host=os.getenv("DB_HOST","localhost"),
-  #  user=os.getenv("DB_USER","root"),
-   # password=os.getenv("DB_PASS","root"),
-    #database=os.getenv("DB_NAME","scisp"),
-    #autocommit=False
-#)
+
 
 def get_conn():
     return mysql.connect(**CFG)
@@ -58,7 +56,7 @@ def get_usuario_by_id(user_id: int):
         IdUsuarios,
         NombreUsuario,
         Contraseña,
-        idNivelUsuario,
+        NivelUsuario AS idNivelUsuario,
         CASE
           WHEN Estatus IN ('A','1',1) THEN 1
           ELSE 0
@@ -122,7 +120,7 @@ def insert_usuario(idUsuarios: int, nombre: str, pwd_plain: str,
     fecha = date.today()
     sql = """
       INSERT INTO usuarios
-        (`IdUsuarios`, `NombreUsuario`, `Contraseña`, `idNivelUsuario`, `Estatus`, `FechaAlta`)
+        (`IdUsuarios`, `NombreUsuario`, `Contraseña`, `NivelUsuario`, `Estatus`, `FechaAlta`)
       VALUES (%s, %s, %s, %s, %s, %s)
     """
     conn = get_conn(); cur = conn.cursor()
@@ -164,7 +162,7 @@ def update_usuario(
             sets.append("NombreUsuario=%s")
             params.append(nombre)
         if id_nivel is not None:
-            sets.append("idNivelUsuario=%s")
+            sets.append("NivelUsuario=%s")
             params.append(id_nivel)
         if estatus is not None:
             sets.append("Estatus=%s")
@@ -209,9 +207,8 @@ def get_usuario_row(user_id: int) -> Optional[Dict]:
       SELECT
         IdUsuarios,
         NombreUsuario,
-        idNivelUsuario,
-        CASE WHEN Estatus IN ('A','1',1) THEN 1 ELSE 0 END AS Estatus,
-        FechaAlta
+        NivelUsuario AS idNivelUsuario,
+        CASE WHEN Estatus IN ('A','1',1) THEN 1 ELSE 0 END AS Estatus
       FROM usuarios
       WHERE IdUsuarios = %s
     """
@@ -318,7 +315,7 @@ def list_usuarios(
         params["estatus"] = estatus
 
     if idNivelUsuario is not None:
-        where.append("u.idNivelUsuario = %(idNivelUsuario)s")
+        where.append("u.NivelUsuario = %(idNivelUsuario)s")
         params["idNivelUsuario"] = idNivelUsuario
 
     if q:
@@ -342,14 +339,13 @@ def list_usuarios(
         SELECT
             u.IdUsuarios         AS idUsuarios,
             u.NombreUsuario      AS NombreUsuario,
-            u.idNivelUsuario     AS idNivelUsuario,
+            u.NivelUsuario       AS idNivelUsuario,
             u.Estatus            AS estatus,
-            u.FechaAlta          AS FechaAlta,
             n.NivelUsuario       AS nivel,
             COALESCE(COUNT(us.idCentro), 0) AS sucursales
         FROM usuarios u
         LEFT JOIN nivelusuarios n
-               ON n.IdNivelUsuario = u.idNivelUsuario
+               ON n.IdNivelUsuario = u.NivelUsuario
         LEFT JOIN met_usuariosuc us
                ON us.idUsuarios = u.IdUsuarios
         {where_sql}

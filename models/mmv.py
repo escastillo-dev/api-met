@@ -8,7 +8,7 @@ class AbrirBitacoraIn(BaseModel):
     hora: Optional[time] = None          # si no llega, se toma NOW()
     anfitrion: int
     idUsuarios: int
-    idIncidencia: int                     # Debe existir en met_incmanval
+    idIncidencia: Optional[int] = None    # no requerido por el SP mmv_abrir_folio
     caja: Optional[int] = 0
     cajero: Optional[int] = 0
     comentario: Optional[str] = None

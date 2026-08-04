@@ -13,10 +13,76 @@ from DAO.ApcDAO import equipos_existen, crear_apci
 from DAO.IncidenciasDAO import list_incidencias
 from DAO.NivelesDAO import list_niveles
 from DAO.StatsDAO import get_dashboard_stats
+from DAO.DashboardDAO import (
+    get_resumen_merma,
+    get_resumen_recuperaciones,
+    get_resumen_caducidad,
+    get_resumen_manejo_valores,
+    get_merma_vs_recuperaciones,
+    get_top_productos_merma,
+    get_top_productos_recuperacion,
+    get_caducidad_por_zona,
+    get_merma_por_motivo,
+    get_recuperacion_por_tipo,
+)
+from models.dashboard import (
+    DashboardResumenOut, MermaKpi, RecuperacionesKpi, CaducidadKpi, ManejoValoresKpi,
+    DashboardGraficasOut, MermaVsRecuperacion, TopProducto,
+    CaducidadPorZona, MermaPorMotivo, RecuperacionPorTipo,
+)
 from DAO.SucursalesDAO import list_sucursales, list_sucursales_no_asignadas
 from DAO.ZonasDAO import list_zonas
+from DAO.CaducidadDAO import (
+    create_cad_registro,
+    list_cad_registros,
+    get_cad_registro_by_id,
+    list_cad_acciones,
+    get_cad_cierre,
+    create_cad_accion,
+    close_cad_registro,
+    get_cad_resumen,
+)
+from DAO.RecuperacionesDAO import (
+    list_tipos_recuperacion,
+    list_proveedores,
+    get_proveedor,
+    create_proveedor,
+    update_proveedor,
+    baja_proveedor,
+    asignar_proveedor_zona,
+    list_proveedores_por_centro,
+    create_recuperacion,
+    list_recuperaciones,
+    get_recuperacion_by_id,
+    get_detalle_recuperacion,
+    add_evidencia,
+    update_estatus_recuperacion,
+    get_stats_recuperaciones,
+)
+from models.recuperaciones import (
+    ProveedorCreateIn, ProveedorUpdateIn, ProveedorZonaIn,
+    RecuperacionCreateIn, EvidenciaCreateIn, UpdateEstatusIn,
+    TiposOut, TipoRecuperacionOut,
+    ProveedoresPageOut, ProveedorOut, ProveedorItemOut,
+    RecuperacionesPageOut, RecuperacionOut, RecuperacionDetalleOut,
+    DetalleOut, EvidenciaOut, OperacionOut,
+    RecuperacionesStatsOut, StatsZona, StatsSucursal,
+    StatsProveedor, StatsTipo, StatsProducto, StatsMes,
+)
 from models.apci import ApcCreatedOut, ApcIn
 from models.auth import AuthIn, AuthOut, UsuarioOut
+from models.caducidad import (
+    CadRegistroCreateIn,
+    CadAccionCreateIn,
+    CadCierreCreateIn,
+    CadOperacionOut,
+    CadRegistrosPageOut,
+    CadRegistroOut,
+    CadAccionOut,
+    CadCierreOut,
+    CadRegistroDetalleOut,
+    CadDetalleResponseOut,
+)
 from models.incidencias import IncidenciasOut, IncidenciaItemOut
 from models.niveles import NivelesOut, NivelItemOut
 from models.sucursales import SucursalesOut, SucursalItemOut
@@ -33,8 +99,9 @@ from datetime import datetime, date, timedelta
 from models.mmv import AbrirBitacoraIn, AbrirBitacoraOut, RegistrarMovimientoOut, RegistrarMovimientoIn, MovimientosOut
 from DAO.ManejoValoresDAO import (
     sucursal_existe, usuario_activo, folio_abierto_hoy, call_sp_insertar_manval, incidencia_existe,
-    get_movimientos_generales
+    get_movimientos_generales, call_sp_abrir_folio, call_sp_registrar_movimiento
 )
+from mysql.connector import Error as MySQLError
 from security_basic import require_roles
 from typing import Optional, Set
 from fastapi.middleware.cors import CORSMiddleware
@@ -73,11 +140,8 @@ async def autenticar(payload: AuthIn, request: Request, idCentro: Optional[str] 
     if not check_password(payload.pwd, user["Contraseña"]):
         raise HTTPException(status_code=401, detail="Credenciales inválidas")
 
-    # 5) Nivel/Rol (si quieres limitar quién puede entrar a la APP)
-    #   ejemplo: solo niveles 1..3
+    # 5) Nivel/Rol: ya NO se restringe aquí; el front maneja permisos por nivel.
     nivel = int(user["idNivelUsuario"])
-    if nivel not in (1,2,3,4,9,5,6,7,8):  # ajusta a tus reglas
-        raise HTTPException(status_code=403, detail="Nivel de usuario no permitido")
 
     # 6) Sucursal (si se envía idCentro, validar pertenencia)
     id_centro_usuario = None
@@ -431,51 +495,25 @@ async def abrir_bitacora(
     if not usuario_activo(body.idUsuarios):
         raise HTTPException(status_code=400, detail="Usuario inactivo o inexistente")
 
-    # 2) ¿ya existe folio abierto HOY?
+    # 2) ¿ya existe folio abierto HOY? (solo para el mensaje; el SP es idempotente)
     folio_existente = folio_abierto_hoy(id_centro)
-    if folio_existente:
-        # idempotente: no dupliques apertura
-        return AbrirBitacoraOut(
-            estatus=1,
-            mensaje="Folio ya estaba abierto",
-            folio=folio_existente,
-            detalle=0
-        )
 
-    # 3) Llamar SP para registrar APERTURA
-    #    Estado para header = 'A', Movimiento = 'A' (apertura), sin depósito/SF
-    hora_txt = body.hora.isoformat() if body.hora else None
-    comentario = body.comentario or "APERTURA DE BITÁCORA"
-
+    # 3) Llamar al SP mmv_abrir_folio: busca folio de HOY o crea el encabezado
     try:
-        sp_msg, folio, det = call_sp_insertar_manval(
-            id_centro      = id_centro,
-            anfitrion      = body.anfitrion,
-            id_usuarios    = body.idUsuarios,
-            estado         = 'A',
-            movimiento     = 'A',
-            hora_m         = hora_txt,
-            caja           = body.caja or 0,
-            cajero         = body.cajero or 0,
-            id_incidencia  = body.idIncidencia,   # debe existir en met_incmanval
-            deposito       = 'N',
-            comentario     = comentario,
-            sf             = 'N',
-            tipo_sf        = 'N',
-            sf_monto       = None
+        folio = call_sp_abrir_folio(
+            id_centro   = id_centro,
+            anfitrion   = body.anfitrion,
+            id_usuarios = body.idUsuarios,
+            estado      = 'A'
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"SP InsertarManVal: {type(e).__name__}: {e}")
-
-    # Si el SP no trajo folio parseable, trae el folio abierto después del SP
-    if not folio:
-        folio = folio_abierto_hoy(id_centro) or 0
+        raise HTTPException(status_code=500, detail=f"SP mmv_abrir_folio: {type(e).__name__}: {e}")
 
     return AbrirBitacoraOut(
         estatus = 1,
-        mensaje = sp_msg or "Folio creado",
-        folio   = int(folio),
-        detalle = int(det or 0)
+        mensaje = "Folio ya estaba abierto" if folio_existente else "Folio creado",
+        folio   = folio,
+        detalle = 0
     )
 
 @app.post("/mmv/movimientos", response_model=RegistrarMovimientoOut, tags=["Manejo de Valores"])
@@ -514,13 +552,15 @@ async def registrar_movimiento(
     if sf not in ('S','N'):
         raise HTTPException(status_code=400, detail="sf debe ser 'S' o 'N'")
 
-    # 3) Llamar SP: si no hay folio abierto, el SP abrirá uno (Estado 'A') y agregará el detalle
+    # 3) El folio debe estar abierto (Estado='A') para esa sucursal en el día de hoy
+    folio = folio_abierto_hoy(id_centro)
+    if not folio:
+        raise HTTPException(status_code=400, detail="No hay folio abierto hoy para esta sucursal; abra la bitácora primero")
+
+    # 4) Llamar al SP mmv_registrar_mov (valida movimiento/folio/incidencia con SIGNAL)
     try:
-        sp_msg, folio, det = call_sp_insertar_manval(
-            id_centro      = id_centro,
-            anfitrion      = body.anfitrion,
-            id_usuarios    = body.idUsuarios,
-            estado         = 'A',               # encabezado abierto si se crea
+        det = call_sp_registrar_movimiento(
+            folio          = folio,
             movimiento     = mov,               # 'R'|'C'|'A'
             hora_m         = hora_txt,
             caja           = body.caja or 0,
@@ -532,15 +572,19 @@ async def registrar_movimiento(
             tipo_sf        = tipo_sf,
             sf_monto       = body.sfMonto
         )
+    except MySQLError as e:
+        if e.errno == 1644:  # SIGNAL SQLSTATE '45000' del SP
+            raise HTTPException(status_code=400, detail=e.msg)
+        raise HTTPException(status_code=500, detail=f"SP mmv_registrar_mov: {type(e).__name__}: {e}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"SP InsertarManVal: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=f"SP mmv_registrar_mov: {type(e).__name__}: {e}")
 
-    # 4) Respuesta
+    # 5) Respuesta
     return RegistrarMovimientoOut(
         estatus = 1,
-        mensaje = sp_msg or "Movimiento registrado",
-        folio   = int(folio or 0),
-        detalle = int(det or 0)
+        mensaje = "Movimiento registrado",
+        folio   = folio,
+        detalle = det
     )
 
 @app.get("/mmv/movimientos", response_model=MovimientosOut, tags=["Manejo de Valores"])
@@ -1074,5 +1118,469 @@ async def eliminar_producto_merma(
             "estatus": 0,
             "mensaje": f"Error al eliminar producto: {str(e)}"
         }
+
+
+@app.get(
+    "/caducidad/resumen",
+    tags=["Próximos a caducar"],
+    summary="Conteos para el dashboard de caducidad"
+)
+async def resumen_caducidad(
+    idCentro: Optional[str] = Query(None, description="Filtrar por sucursal"),
+    current=Depends(require_roles())
+):
+    try:
+        data = get_cad_resumen(id_centro=idCentro)
+        return {"estatus": 1, "data": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al obtener resumen: {e}")
+
+
+@app.post(
+    "/caducidad/registros",
+    response_model=CadOperacionOut,
+    tags=["Próximos a caducar"],
+    summary="Crear caso de producto próximo a caducar"
+)
+async def crear_caso_caducidad(
+    body: CadRegistroCreateIn,
+    current=Depends(require_roles())
+):
+    try:
+        nuevo_id = create_cad_registro(body)
+        return CadOperacionOut(estatus=1, mensaje="Caso creado", idCad=nuevo_id)
+    except ValueError as e:
+        msg = str(e)
+        status = 404 if "no existe" in msg.lower() else 400
+        raise HTTPException(status_code=status, detail=msg)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al crear caso: {e}")
+
+
+@app.get(
+    "/caducidad/registros",
+    response_model=CadRegistrosPageOut,
+    tags=["Próximos a caducar"],
+    summary="Listar casos de caducidad"
+)
+async def listar_casos_caducidad(
+    estatus: Optional[str] = Query("A", pattern="^(A|C)$"),
+    idCentro: Optional[str] = Query(None, description="Sucursal (idCentro)"),
+    q: Optional[str] = Query(None, description="Buscar por código de barras o producto"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    current=Depends(require_roles())
+):
+    try:
+        rows, total = list_cad_registros(
+            estatus=estatus,
+            id_centro=idCentro,
+            q=q,
+            limit=limit,
+            offset=offset,
+        )
+        items = [
+            CadRegistroOut(
+                idCad=r["idCad"],
+                idCentro=r["idCentro"],
+                CodigoBarras=r["CodigoBarras"],
+                fechaCaducidad=r["fechaCaducidad"],
+                cantidadDetectada=r["cantidadDetectada"],
+                FechaRegistro=r["FechaRegistro"],
+                idUsuarios=r["idUsuarios"],
+                diasAlerta=r["diasAlerta"],
+                estatus=r["estatus"],
+                nota=r.get("nota"),
+                diasRestantes=r.get("diasRestantes"),
+            )
+            for r in rows
+        ]
+        return CadRegistrosPageOut(
+            estatus=1,
+            mensaje="OK",
+            total=total,
+            limit=limit,
+            offset=offset,
+            items=items,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al listar casos: {e}")
+
+
+@app.get(
+    "/caducidad/registros/{idCad}",
+    response_model=CadDetalleResponseOut,
+    tags=["Próximos a caducar"],
+    summary="Consultar detalle de un caso"
+)
+async def detalle_caso_caducidad(
+    idCad: int = Path(..., gt=0),
+    current=Depends(require_roles())
+):
+    try:
+        registro = get_cad_registro_by_id(idCad)
+        if not registro:
+            raise HTTPException(status_code=404, detail="Caso no encontrado")
+
+        acciones = list_cad_acciones(idCad)
+        cierre = get_cad_cierre(idCad)
+
+        data = CadRegistroDetalleOut(
+            registro=CadRegistroOut(**registro),
+            acciones=[CadAccionOut(**a) for a in acciones],
+            cierre=CadCierreOut(**cierre) if cierre else None,
+        )
+        return CadDetalleResponseOut(estatus=1, mensaje="OK", data=data)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al consultar detalle: {e}")
+
+
+@app.post(
+    "/caducidad/registros/{idCad}/acciones",
+    response_model=CadOperacionOut,
+    tags=["Próximos a caducar"],
+    summary="Agregar acción a caso de caducidad"
+)
+async def agregar_accion_caducidad(
+    idCad: int = Path(..., gt=0),
+    body: CadAccionCreateIn = ...,
+    current=Depends(require_roles())
+):
+    try:
+        id_accion = create_cad_accion(idCad, body)
+        return CadOperacionOut(estatus=1, mensaje="Acción registrada", idCad=idCad, idAccion=id_accion)
+    except ValueError as e:
+        msg = str(e)
+        status = 404 if "no existe" in msg.lower() else 400
+        raise HTTPException(status_code=status, detail=msg)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al registrar acción: {e}")
+
+
+@app.post(
+    "/caducidad/registros/{idCad}/cierre",
+    response_model=CadOperacionOut,
+    tags=["Próximos a caducar"],
+    summary="Cerrar caso de caducidad"
+)
+async def cerrar_caso_caducidad(
+    idCad: int = Path(..., gt=0),
+    body: CadCierreCreateIn = ...,
+    current=Depends(require_roles())
+):
+    try:
+        id_cierre = close_cad_registro(idCad, body)
+        return CadOperacionOut(estatus=1, mensaje="Caso cerrado", idCad=idCad, idCierre=id_cierre)
+    except ValueError as e:
+        msg = str(e)
+        status = 404 if "no existe" in msg.lower() else 400
+        raise HTTPException(status_code=status, detail=msg)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al cerrar caso: {e}")
+
+
+
+
+# ═══════════════════════════════════════════════════════════════
+# MÓDULO: RECUPERACIONES
+# ═══════════════════════════════════════════════════════════════
+
+# ── Catálogos ────────────────────────────────────────────────────────────────
+
+@app.get("/catalogos/tipos-recuperacion", response_model=TiposOut,
+         tags=["Recuperaciones"], summary="Tipos de recuperación (combo)")
+async def get_tipos_recuperacion(current=Depends(require_roles())):
+    try:
+        tipos = list_tipos_recuperacion()
+        return TiposOut(estatus=1, mensaje="OK", tipos=[TipoRecuperacionOut(**t) for t in tipos])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {e}")
+
+
+# ── Proveedores ───────────────────────────────────────────────────────────────
+prov_router = APIRouter(prefix="/proveedores", tags=["Recuperaciones - Proveedores"])
+
+# IMPORTANTE: rutas fijas ANTES de /{idProveedor}
+@prov_router.get("/disponibles", response_model=ProveedoresPageOut,
+                 summary="Proveedores disponibles para una sucursal")
+async def proveedores_disponibles(
+    idCentro: str = Query(..., description="idCentro de la sucursal"),
+    current=Depends(require_roles())
+):
+    try:
+        rows = list_proveedores_por_centro(idCentro)
+        return ProveedoresPageOut(estatus=1, mensaje="OK", total=len(rows),
+                                  items=[ProveedorOut(**r) for r in rows])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {e}")
+
+
+@prov_router.get("", response_model=ProveedoresPageOut, summary="Listar proveedores")
+async def listar_proveedores(
+    q: Optional[str] = Query(None),
+    estatus: Optional[int] = Query(None, ge=0, le=1),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    current=Depends(require_roles())
+):
+    try:
+        rows, total = list_proveedores(q=q, estatus=estatus, limit=limit, offset=offset)
+        return ProveedoresPageOut(estatus=1, mensaje="OK", total=total,
+                                  items=[ProveedorOut(**r) for r in rows])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {e}")
+
+
+@prov_router.post("", response_model=OperacionOut, summary="Crear proveedor")
+async def crear_proveedor(body: ProveedorCreateIn, current=Depends(require_roles())):
+    try:
+        nuevo_id = create_proveedor(body)
+        return OperacionOut(estatus=1, mensaje="Proveedor creado", id=nuevo_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {e}")
+
+
+@prov_router.get("/{idProveedor}", response_model=ProveedorItemOut, summary="Consultar proveedor")
+async def consultar_proveedor(idProveedor: int = Path(..., gt=0), current=Depends(require_roles())):
+    row = get_proveedor(idProveedor)
+    if not row:
+        raise HTTPException(status_code=404, detail="Proveedor no encontrado")
+    return ProveedorItemOut(estatus=1, mensaje="OK", data=ProveedorOut(**row))
+
+
+@prov_router.put("/{idProveedor}", response_model=OperacionOut, summary="Actualizar proveedor")
+async def actualizar_proveedor(
+    idProveedor: int = Path(..., gt=0),
+    body: ProveedorUpdateIn = ...,
+    current=Depends(require_roles())
+):
+    if not get_proveedor(idProveedor):
+        raise HTTPException(status_code=404, detail="Proveedor no encontrado")
+    update_proveedor(idProveedor, body)
+    return OperacionOut(estatus=1, mensaje="Proveedor actualizado", id=idProveedor)
+
+
+@prov_router.delete("/{idProveedor}", response_model=OperacionOut, summary="Baja lógica proveedor")
+async def baja_logica_proveedor(idProveedor: int = Path(..., gt=0), current=Depends(require_roles())):
+    if not get_proveedor(idProveedor):
+        raise HTTPException(status_code=404, detail="Proveedor no encontrado")
+    baja_proveedor(idProveedor)
+    return OperacionOut(estatus=1, mensaje="Proveedor dado de baja", id=idProveedor)
+
+
+@app.post("/proveedor-zona", response_model=OperacionOut,
+          tags=["Recuperaciones - Proveedores"], summary="Asignar proveedor a zona")
+async def asignar_zona(body: ProveedorZonaIn, current=Depends(require_roles())):
+    try:
+        res = asignar_proveedor_zona(body.idProveedor, body.idZona)
+        msg = "Asignación ya existía" if res == 0 else "Proveedor asignado a zona"
+        return OperacionOut(estatus=1, mensaje=msg, id=res or None)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {e}")
+
+
+app.include_router(prov_router)
+
+
+# ── Recuperaciones ────────────────────────────────────────────────────────────
+recup_router = APIRouter(prefix="/recuperaciones", tags=["Recuperaciones"])
+
+# IMPORTANTE: /stats y rutas fijas ANTES de /{idRecuperacion}
+@recup_router.get("/stats", response_model=RecuperacionesStatsOut,
+                  summary="Dashboard / estadísticas de recuperaciones")
+async def stats_recuperaciones(
+    idCentro: Optional[str] = Query(None),
+    idZona: Optional[int] = Query(None),
+    fecha_inicio: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    fecha_fin: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    current=Depends(require_roles())
+):
+    try:
+        data = get_stats_recuperaciones(
+            id_centro=idCentro, id_zona=idZona,
+            fecha_inicio=fecha_inicio, fecha_fin=fecha_fin
+        )
+        return RecuperacionesStatsOut(
+            estatus=1,
+            totalImporte=data["totalImporte"],
+            totalEventos=data["totalEventos"],
+            porZona=[StatsZona(**r) for r in data["porZona"]],
+            porSucursal=[StatsSucursal(**r) for r in data["porSucursal"]],
+            porProveedor=[StatsProveedor(**r) for r in data["porProveedor"]],
+            porTipo=[StatsTipo(**r) for r in data["porTipo"]],
+            topProductos=[StatsProducto(**r) for r in data["topProductos"]],
+            porMes=[StatsMes(**r) for r in data["porMes"]],
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al obtener stats: {e}")
+
+
+@recup_router.get("", response_model=RecuperacionesPageOut,
+                  summary="Listar recuperaciones con filtros")
+async def listar_recuperaciones(
+    idCentro: Optional[str] = Query(None),
+    idZona: Optional[int] = Query(None),
+    idTipoRecuperacion: Optional[int] = Query(None),
+    idProveedor: Optional[int] = Query(None),
+    fecha_inicio: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    fecha_fin: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    idUsuario: Optional[int] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    pagina: int = Query(1, ge=1),
+    current=Depends(require_roles())
+):
+    try:
+        offset = (pagina - 1) * limit
+        rows, total = list_recuperaciones(
+            id_centro=idCentro, id_zona=idZona, id_tipo=idTipoRecuperacion,
+            id_proveedor=idProveedor, fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin, id_usuario=idUsuario,
+            limit=limit, offset=offset
+        )
+        items = [RecuperacionOut(**{k: v for k, v in r.items()}) for r in rows]
+        return RecuperacionesPageOut(estatus=1, mensaje="OK", total=total,
+                                     limit=limit, pagina=pagina, items=items)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al listar recuperaciones: {e}")
+
+
+@recup_router.post("", response_model=OperacionOut,
+                   summary="Registrar recuperación con detalle")
+async def registrar_recuperacion(body: RecuperacionCreateIn, current=Depends(require_roles())):
+    try:
+        nuevo_id = create_recuperacion(body)
+        return OperacionOut(estatus=1, mensaje="Recuperación registrada", id=nuevo_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        import logging
+        logging.exception("Error al registrar recuperación")
+        raise HTTPException(status_code=500, detail=f"Error al registrar: {type(e).__name__}: {e}")
+
+
+@recup_router.get("/{idRecuperacion}", response_model=RecuperacionDetalleOut,
+                  summary="Consultar detalle de recuperación")
+async def detalle_recuperacion(
+    idRecuperacion: int = Path(..., gt=0),
+    current=Depends(require_roles())
+):
+    try:
+        row = get_recuperacion_by_id(idRecuperacion)
+        if not row:
+            raise HTTPException(status_code=404, detail="Recuperación no encontrada")
+        detalle = get_detalle_recuperacion(idRecuperacion)
+        data = RecuperacionOut(
+            **{k: v for k, v in row.items()},
+            detalle=[DetalleOut(**d) for d in detalle]
+        )
+        return RecuperacionDetalleOut(estatus=1, mensaje="OK", data=data)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al consultar: {e}")
+
+
+@recup_router.post("/{idRecuperacion}/evidencias", response_model=OperacionOut,
+                   summary="Agregar evidencia a recuperación")
+async def agregar_evidencia(
+    idRecuperacion: int = Path(..., gt=0),
+    body: EvidenciaCreateIn = ...,
+    current=Depends(require_roles())
+):
+    if not get_recuperacion_by_id(idRecuperacion):
+        raise HTTPException(status_code=404, detail="Recuperación no encontrada")
+    try:
+        nuevo_id = add_evidencia(idRecuperacion, body)
+        return OperacionOut(estatus=1, mensaje="Evidencia agregada", id=nuevo_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {e}")
+
+
+@recup_router.put("/{idRecuperacion}/estatus", response_model=OperacionOut,
+                  summary="Cerrar o cancelar recuperación")
+async def actualizar_estatus_recuperacion(
+    idRecuperacion: int = Path(..., gt=0),
+    body: UpdateEstatusIn = ...,
+    current=Depends(require_roles())
+):
+    if not get_recuperacion_by_id(idRecuperacion):
+        raise HTTPException(status_code=404, detail="Recuperación no encontrada")
+    update_estatus_recuperacion(idRecuperacion, body.estatus)
+    msg = "Recuperación activa" if body.estatus == 1 else "Recuperación cancelada"
+    return OperacionOut(estatus=1, mensaje=msg, id=idRecuperacion)
+
+
+app.include_router(recup_router)
+
+
+# ── DASHBOARD GENERAL ─────────────────────────────────────────────────────────
+dash_router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
+
+
+@dash_router.get("/resumen", response_model=DashboardResumenOut,
+                 summary="KPIs generales: merma, recuperaciones, caducidad y manejo de valores")
+async def dashboard_resumen(
+    idCentro: Optional[str] = Query(None, description="Filtrar por sucursal"),
+    idZona: Optional[int] = Query(None, description="Filtrar por zona"),
+    fecha_inicio: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    fecha_fin: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    current=Depends(require_roles())
+):
+    try:
+        merma   = get_resumen_merma(idCentro, idZona, fecha_inicio, fecha_fin)
+        recup   = get_resumen_recuperaciones(idCentro, idZona, fecha_inicio, fecha_fin)
+        cad     = get_resumen_caducidad(idCentro, idZona)
+        manval  = get_resumen_manejo_valores(idCentro, idZona, fecha_inicio, fecha_fin)
+        return DashboardResumenOut(
+            estatus=1,
+            mensaje="OK",
+            fechaInicio=fecha_inicio,
+            fechaFin=fecha_fin,
+            merma=MermaKpi(**merma),
+            recuperaciones=RecuperacionesKpi(**recup),
+            caducidad=CaducidadKpi(**cad),
+            manejoValores=ManejoValoresKpi(**manval),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error en dashboard resumen: {e}")
+
+
+@dash_router.get("/graficas", response_model=DashboardGraficasOut,
+                 summary="Series de datos para gráficas del dashboard")
+async def dashboard_graficas(
+    idCentro: Optional[str] = Query(None, description="Filtrar por sucursal"),
+    idZona: Optional[int] = Query(None, description="Filtrar por zona"),
+    fecha_inicio: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    fecha_fin: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    meses: int = Query(6, ge=1, le=24, description="Meses hacia atrás para el comparativo"),
+    top: int = Query(10, ge=1, le=50, description="Top N productos"),
+    current=Depends(require_roles())
+):
+    try:
+        comparativo  = get_merma_vs_recuperaciones(idCentro, idZona, meses)
+        top_merma    = get_top_productos_merma(idCentro, idZona, fecha_inicio, fecha_fin, top)
+        top_recup    = get_top_productos_recuperacion(idCentro, idZona, fecha_inicio, fecha_fin, top)
+        cad_zona     = get_caducidad_por_zona(idCentro)
+        por_motivo   = get_merma_por_motivo(idCentro, idZona, fecha_inicio, fecha_fin)
+        por_tipo     = get_recuperacion_por_tipo(idCentro, idZona, fecha_inicio, fecha_fin)
+        return DashboardGraficasOut(
+            estatus=1,
+            mensaje="OK",
+            mermaVsRecuperaciones=[MermaVsRecuperacion(**r) for r in comparativo],
+            topProductosMerma=[TopProducto(**r) for r in top_merma],
+            topProductosRecuperacion=[TopProducto(**r) for r in top_recup],
+            caducidadPorZona=[CaducidadPorZona(**r) for r in cad_zona],
+            mermaPorMotivo=[MermaPorMotivo(**r) for r in por_motivo],
+            recuperacionPorTipo=[RecuperacionPorTipo(**r) for r in por_tipo],
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error en dashboard gráficas: {e}")
+
+
+app.include_router(dash_router)
+
+
 if __name__ == '__main__':
     uvicorn.run('main:app',reload=True, port=8000, host='0.0.0.0')

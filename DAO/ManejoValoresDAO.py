@@ -38,6 +38,25 @@ def folio_abierto_hoy(id_centro: str) -> Optional[int]:
     cur.close(); conn.close()
     return None if row is None else int(row[0])
 
+def call_sp_abrir_folio(
+    id_centro: str,
+    anfitrion: int,
+    id_usuarios: int,
+    estado: str = 'A'
+) -> int:
+    """
+    Llama al SP mmv_abrir_folio.
+    Busca el folio abierto de HOY para idCentro; si no existe, crea el
+    encabezado en met_manejovalores y devuelve el nuevo folio (OUT pFolio).
+    """
+    conn = get_conn(); cur = conn.cursor()
+    args = (id_centro, anfitrion, id_usuarios, estado, 0)  # último = OUT pFolio
+    result_args = cur.callproc('mmv_abrir_folio', args)
+    conn.commit()
+    folio = result_args[-1]
+    cur.close(); conn.close()
+    return int(folio)
+
 def call_sp_insertar_manval(
     id_centro: str,
     anfitrion: int,
@@ -109,6 +128,37 @@ def incidencia_existe(id_incidencia: int) -> bool:
     ok = cur.fetchone() is not None
     cur.close(); conn.close()
     return ok
+
+def call_sp_registrar_movimiento(
+    folio: int,
+    movimiento: str,       # 'R'|'C'|'A'
+    hora_m: Optional[str],
+    caja: int,
+    cajero: int,
+    id_incidencia: int,
+    deposito: str,         # 'S'|'N'
+    comentario: Optional[str],
+    sf: str,               # 'S'|'N'
+    tipo_sf: str,
+    sf_monto: Optional[float]
+) -> int:
+    """
+    Llama al SP mmv_registrar_mov. Requiere un folio YA abierto (Estado='A').
+    El propio SP valida movimiento/folio/incidencia con SIGNAL SQLSTATE '45000',
+    por lo que los errores llegan como mysql.connector.errors.Error (errno 1644)
+    con un mensaje claro (p.ej. "Folio no existe o no está abierto").
+    Devuelve el idDetManVal (OUT pDetId).
+    """
+    conn = get_conn(); cur = conn.cursor()
+    args = (
+        folio, movimiento, hora_m, caja, cajero, id_incidencia,
+        deposito, comentario, sf, tipo_sf, sf_monto, 0  # último = OUT pDetId
+    )
+    result_args = cur.callproc('mmv_registrar_mov', args)
+    conn.commit()
+    det_id = result_args[-1]
+    cur.close(); conn.close()
+    return int(det_id)
 
 def get_movimientos_generales(
     id_centro: Optional[str] = None,

@@ -6,13 +6,17 @@ from DAO.UsuariosDAO import  get_usuario_by_id, check_password
 
 security = HTTPBasic()
 
-# Niveles permitidos para administrar usuarios
-ADMIN_LEVELS: Set[int] = {1, 2, 3, 4,6}  # ejemplo: 1=Admin, 2=Coordinador, 3=Supervisor
+# NOTA: Ya no se restringe por nivel de usuario a nivel de API.
+# El control de permisos por nivel/rol se maneja en el front-end.
+# Se deja ADMIN_LEVELS solo por compatibilidad, pero no se usa para bloquear.
+ADMIN_LEVELS: Set[int] = {1, 2, 3, 4, 6}  # ejemplo: 1=Admin, 2=Coordinador, 3=Supervisor
 
 def require_roles(allowed_levels: Optional[Set[int]] = None):
-    """Devuelve una dependencia que valida BasicAuth y nivel de usuario."""
-    if allowed_levels is None:
-        allowed_levels = ADMIN_LEVELS
+    """
+    Devuelve una dependencia que valida BasicAuth (usuario/password/estatus activo).
+    El parámetro `allowed_levels` se conserva por compatibilidad con las llamadas
+    existentes, pero YA NO se usa para restringir el acceso por nivel de usuario.
+    """
 
     async def _dep(credentials: HTTPBasicCredentials = Depends(security)) -> Dict[str, Any]:
         # username debe ser el idUsuarios (int) según tu modelo
@@ -32,8 +36,7 @@ def require_roles(allowed_levels: Optional[Set[int]] = None):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Credenciales inválidas")
 
         nivel = int(user["idNivelUsuario"])
-        if nivel not in allowed_levels:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permisos insuficientes")
+        # Ya NO se valida `nivel not in allowed_levels` — el front controla permisos.
 
         # Devuelve el usuario autenticado para usarlo en el endpoint
         return {
