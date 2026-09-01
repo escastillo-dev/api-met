@@ -32,6 +32,11 @@ from models.dashboard import (
 )
 from DAO.SucursalesDAO import list_sucursales, list_sucursales_no_asignadas
 from DAO.ZonasDAO import list_zonas
+from DAO.ProductosConsumidosDAO import (
+    crear_prodconsumido,
+    list_prodconsumidos,
+    get_prodconsumido_by_folio,
+)
 from DAO.CaducidadDAO import (
     create_cad_registro,
     list_cad_registros,
@@ -82,6 +87,13 @@ from models.caducidad import (
     CadCierreOut,
     CadRegistroDetalleOut,
     CadDetalleResponseOut,
+)
+from models.consumo import (
+    ProdConsumidoCreateIn,
+    ProdConsumidoOut,
+    ProdConsumidoOperacionOut,
+    ProdConsumidosPageOut,
+    ProdConsumidoDetalleResponseOut,
 )
 from models.incidencias import IncidenciasOut, IncidenciaItemOut
 from models.niveles import NivelesOut, NivelItemOut
@@ -1281,6 +1293,93 @@ async def cerrar_caso_caducidad(
         raise HTTPException(status_code=500, detail=f"Error al cerrar caso: {e}")
 
 
+# ═══════════════════════════════════════════════════════════════
+# MÓDULO: PRODUCTOS CONSUMIDOS
+# ═══════════════════════════════════════════════════════════════
+
+@app.post(
+    "/productos-consumidos",
+    response_model=ProdConsumidoOperacionOut,
+    tags=["Productos Consumidos"],
+    summary="Marcar un producto consumido y generar su folio único"
+)
+async def crear_producto_consumido(
+    body: ProdConsumidoCreateIn,
+    current=Depends(require_roles())
+):
+    try:
+        resultado = crear_prodconsumido(body)
+        return ProdConsumidoOperacionOut(
+            estatus=1,
+            mensaje="Producto marcado correctamente",
+            idProdConsumido=resultado["idProdConsumido"],
+            Folio=resultado["Folio"],
+        )
+    except ValueError as e:
+        msg = str(e)
+        status = 404 if "no existe" in msg.lower() else 400
+        raise HTTPException(status_code=status, detail=msg)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al marcar producto: {e}")
+
+
+@app.get(
+    "/productos-consumidos",
+    response_model=ProdConsumidosPageOut,
+    tags=["Productos Consumidos"],
+    summary="Listar productos consumidos"
+)
+async def listar_productos_consumidos(
+    idCentro: Optional[str] = Query(None, description="Filtrar por sucursal"),
+    idColaborador: Optional[int] = Query(None, description="Filtrar por nómina del colaborador"),
+    q: Optional[str] = Query(None, description="Buscar por folio, código de barras o producto"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    current=Depends(require_roles())
+):
+    try:
+        rows, total = list_prodconsumidos(
+            id_centro=idCentro,
+            id_colaborador=idColaborador,
+            q=q,
+            limit=limit,
+            offset=offset,
+        )
+        return ProdConsumidosPageOut(
+            estatus=1,
+            mensaje="OK",
+            total=total,
+            limit=limit,
+            offset=offset,
+            items=[ProdConsumidoOut(**r) for r in rows],
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al listar productos consumidos: {e}")
+
+
+@app.get(
+    "/productos-consumidos/{folio}",
+    response_model=ProdConsumidoDetalleResponseOut,
+    tags=["Productos Consumidos"],
+    summary="Verificar un producto por su folio (uso del guardia de seguridad)"
+)
+async def verificar_producto_consumido(
+    folio: str = Path(..., min_length=1, max_length=20),
+    current=Depends(require_roles())
+):
+    try:
+        registro = get_prodconsumido_by_folio(folio)
+        if not registro:
+            raise HTTPException(status_code=404, detail="Folio no encontrado")
+        return ProdConsumidoDetalleResponseOut(
+            estatus=1,
+            mensaje="OK",
+            data=ProdConsumidoOut(**registro),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al verificar folio: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════
