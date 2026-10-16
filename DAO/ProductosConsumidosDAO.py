@@ -35,13 +35,10 @@ def _producto_existe(codigo_barras: str) -> bool:
 
 
 def crear_prodconsumido(data: ProdConsumidoCreateIn) -> Dict[str, Any]:
-    """Inserta un registro en met_prodconsumidos y calcula el Folio desde
-    la aplicación (UPDATE en una sentencia separada tras el INSERT).
-
-    Nota: el Folio NO se calcula con un trigger porque MySQL no permite que
-    un trigger AFTER INSERT actualice la misma tabla que lo disparó
-    (error 1442). Al hacerlo como dos sentencias independientes desde el
-    cliente no hay ninguna restricción.
+    """Inserta un registro en met_prodconsumidos. El Folio no se almacena
+    en la tabla: se calcula a partir del idProdConsumido, tanto aquí (para
+    la respuesta inmediata) como en la vista vw_met_prodconsumidos (para
+    las lecturas posteriores).
 
     idColaborador es solo el número de nómina capturado (no tiene FK a
     ninguna tabla, no se valida existencia ni se conoce su nombre).
@@ -79,11 +76,6 @@ def crear_prodconsumido(data: ProdConsumidoCreateIn) -> Dict[str, Any]:
     )
     new_id = cur.lastrowid
     folio = f"PC{new_id:08d}"
-
-    cur.execute(
-        "UPDATE met_prodconsumidos SET Folio=%s WHERE idProdConsumido=%s",
-        (folio, new_id),
-    )
     conn.commit()
 
     cur.close()
@@ -111,7 +103,7 @@ def list_prodconsumidos(
         where.append("p.idColaborador = %(idColaborador)s")
         params["idColaborador"] = id_colaborador
     if q:
-        where.append("(p.Folio LIKE %(q)s OR p.CodigoBarras LIKE %(q)s OR c.Producto LIKE %(q)s)")
+        where.append("(p.Folio COLLATE utf8mb4_general_ci LIKE %(q)s OR p.CodigoBarras LIKE %(q)s OR c.Producto LIKE %(q)s)")
         params["q"] = f"%{q}%"
 
     where_sql = f"WHERE {' AND '.join(where)}" if where else ""
@@ -119,7 +111,7 @@ def list_prodconsumidos(
     cur.execute(
         f"""
         SELECT COUNT(*) AS total
-        FROM met_prodconsumidos p
+        FROM vw_met_prodconsumidos p
         LEFT JOIN catalogo c ON c.CodigoBarras = p.CodigoBarras
         {where_sql}
         """,
@@ -141,7 +133,7 @@ def list_prodconsumidos(
             p.Comentario,
             COALESCE(c.Producto, 'Producto no encontrado') AS nombreProducto,
             COALESCE(s.Sucursales, 'Sin nombre') AS nombreSucursal
-        FROM met_prodconsumidos p
+        FROM vw_met_prodconsumidos p
         LEFT JOIN catalogo c ON c.CodigoBarras = p.CodigoBarras
         LEFT JOIN sucursales s ON s.IdCentro = p.idCentro
         {where_sql}
@@ -175,10 +167,10 @@ def get_prodconsumido_by_folio(folio: str) -> Optional[Dict[str, Any]]:
             p.Comentario,
             COALESCE(c.Producto, 'Producto no encontrado') AS nombreProducto,
             COALESCE(s.Sucursales, 'Sin nombre') AS nombreSucursal
-        FROM met_prodconsumidos p
+        FROM vw_met_prodconsumidos p
         LEFT JOIN catalogo c ON c.CodigoBarras = p.CodigoBarras
         LEFT JOIN sucursales s ON s.IdCentro = p.idCentro
-        WHERE p.Folio = %s
+        WHERE p.Folio COLLATE utf8mb4_general_ci = %s
         """,
         (folio,),
     )
