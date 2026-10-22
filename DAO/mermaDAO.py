@@ -200,6 +200,63 @@ def get_mermas_by_sucursales(sucursales_ids: List[str]) -> List[Dict[str, Any]]:
         traceback.print_exc()
         return []
 
+def get_mermas_page(sucursales_ids, fecha_inicio=None, fecha_fin=None, limit=None, offset=0):
+    """Una página y su resumen completo, sin consultar cada detalle desde el móvil."""
+    if not sucursales_ids:
+        return [], {"totalRegistros": 0, "totalImporte": 0, "mermasHoy": 0, "mermasMes": 0}
+    conn = get_conn()
+    cursor = None
+    try:
+        cursor = conn.cursor(dictionary=True)
+        placeholders = ','.join(['%s'] * len(sucursales_ids))
+        where = [f"m.idCentro IN ({placeholders})"]
+        params = list(sucursales_ids)
+        if fecha_inicio:
+            where.append("m.Fecha >= %s")
+            params.append(fecha_inicio)
+        if fecha_fin:
+            where.append("m.Fecha < DATE_ADD(%s, INTERVAL 1 DAY)")
+            params.append(fecha_fin)
+        where_sql = " AND ".join(where)
+        # La cabecera define el conjunto filtrado. El detalle se agrega sin
+        # multiplicar los conteos por cada producto de una merma.
+        cursor.execute(f"""
+            SELECT COUNT(*) AS totalRegistros,
+                   COALESCE(SUM(DATE(m.Fecha) = CURRENT_DATE()), 0) AS mermasHoy,
+                   COALESCE(SUM(YEAR(m.Fecha) = YEAR(CURRENT_DATE())
+                       AND MONTH(m.Fecha) = MONTH(CURRENT_DATE())), 0) AS mermasMes,
+                   COALESCE(SUM(m.Fecha >= DATE_SUB(CURRENT_DATE(), INTERVAL 29 DAY)
+                       AND m.Fecha < DATE_ADD(CURRENT_DATE(), INTERVAL 1 DAY)), 0) AS mermasUltimos30Dias
+            FROM met_mame m WHERE {where_sql}
+        """, params)
+        resumen = cursor.fetchone() or {}
+        cursor.execute(f"""
+            SELECT COALESCE(SUM(d.Cantidad * COALESCE(c.Precio, 0)), 0) AS totalImporte
+            FROM met_mame m
+            LEFT JOIN met_detmame d ON d.idMaMe = m.idMaMe
+            LEFT JOIN catalogo c ON c.CodigoBarras = d.CodigoBarras
+            WHERE {where_sql}
+        """, params)
+        resumen.update(cursor.fetchone() or {"totalImporte": 0})
+        paging = " LIMIT %s OFFSET %s" if limit is not None else ""
+        page_params = params + [limit, offset] if limit is not None else params
+        cursor.execute(f"""
+            SELECT m.idMaMe, m.idCentro, m.Fecha, m.idUsuario, m.Anfitrion,
+                   COALESCE(s.Sucursales, 'Sin nombre') AS nombreSucursal,
+                   COALESCE(u.NombreUsuario, 'Usuario no encontrado') AS nombreUsuario
+            FROM met_mame m
+            LEFT JOIN sucursales s ON m.idCentro = s.idCentro
+            LEFT JOIN usuarios u ON m.idUsuario = u.IdUsuarios
+            WHERE {where_sql}
+            ORDER BY m.Fecha DESC, m.idMaMe DESC {paging}
+        """, page_params)
+        return cursor.fetchall(), resumen
+    finally:
+        if cursor is not None:
+            cursor.close()
+        conn.close()
+
+
 def get_productos_merma(merma_id: int) -> List[Dict[str, Any]]:
     """Obtener productos del detalle de una merma"""
     try:

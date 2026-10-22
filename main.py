@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from fastapi import Depends, HTTPException, Query
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from DAO import ApcDAO, mermaDAO
+from DAO.mermaDAO import get_mermas_page
 from DAO.mermaDAO import get_motivos_merma, get_productos_catalogo, eliminar_producto_detalle, get_productos_merma, \
     get_mermas_by_sucursales, agregar_producto_detalle, crear_merma_cabecera, get_merma_by_id
 from models.merma import MotivoMermaResponse, MermaResponse, Merma, MermaCreate
@@ -117,7 +118,11 @@ from mysql.connector import Error as MySQLError
 from security_basic import require_roles
 from typing import Optional, Set
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
+from conditional_reads import ConditionalReadMiddleware
 app = FastAPI(title="API Manejo de Valores")
+app.add_middleware(ConditionalReadMiddleware)
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 router = APIRouter(tags=["Estadísticas"])
 
 app.add_middleware(
@@ -126,6 +131,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["ETag", "Last-Modified"],
 )
 @app.exception_handler(Exception)
 async def all_exc_handler(req: Request, exc: Exception):
@@ -1032,6 +1038,10 @@ async def agregar_producto_a_merma(
 @app.get("/mermas/sucursales/{sucursales_ids}")
 async def get_mermas_by_sucursales_endpoint(
         sucursales_ids: str,
+        limit: Optional[int] = Query(None, ge=1, le=200),
+        offset: int = Query(0, ge=0),
+        fecha_inicio: Optional[date] = None,
+        fecha_fin: Optional[date] = None,
         current=Depends(require_roles())
 ):
     print(f"=== DEBUG ENDPOINT get_mermas_by_sucursales ===")
@@ -1043,7 +1053,9 @@ async def get_mermas_by_sucursales_endpoint(
         print(f"IDs procesados: {ids_list}")
 
         # Llamar al DAO
-        mermas_data = get_mermas_by_sucursales(ids_list)
+        if fecha_inicio and fecha_fin and fecha_inicio > fecha_fin:
+            raise ValueError("La fecha inicial no puede ser posterior a la final")
+        mermas_data, resumen = get_mermas_page(ids_list, fecha_inicio, fecha_fin, limit, offset)
         print(f"Datos recibidos del DAO: {len(mermas_data)} registros")
 
         # Convertir a formato esperado por el frontend
@@ -1070,7 +1082,11 @@ async def get_mermas_by_sucursales_endpoint(
             "estatus": 1,
             "mensaje": "Mermas obtenidas exitosamente",
             "mermas": mermas,
-            "merma": None
+            "merma": None,
+            "total": int(resumen.get("totalRegistros") or 0),
+            "limit": limit,
+            "offset": offset,
+            "resumen": resumen,
         }
 
     except Exception as e:
