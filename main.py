@@ -884,14 +884,21 @@ async def get_motivos_merma_endpoint():
 
 
 @app.get("/productos/buscar")
-async def buscar_productos(q: str = None):
+async def buscar_productos(
+    q: str = None,
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
     """Buscar productos en el catálogo"""
     try:
-        productos = get_productos_catalogo(q)
+        productos, total = get_productos_catalogo(q, limit=limit, offset=offset)
         return {
             "estatus": 1,
             "mensaje": "Productos obtenidos exitosamente",
-            "productos": productos
+            "productos": productos,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
         }
     except Exception as e:
         return {

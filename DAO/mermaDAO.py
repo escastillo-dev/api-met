@@ -31,36 +31,28 @@ def get_motivos_merma() -> List[MotivoMerma]:
         return []
 
 
-def get_productos_catalogo(filtro: str = None) -> List[dict]:
-    """Obtener productos del catálogo para búsqueda"""
+def get_productos_catalogo(
+    filtro: str = None, limit: int = 50, offset: int = 0
+) -> tuple[List[dict], int]:
+    """Obtener una página del catálogo y el total de coincidencias."""
+    conn = get_conn()
+    cursor = None
     try:
-        conn = get_conn()
         cursor = conn.cursor(dictionary=True)
-        if filtro:
-            query = """
-                SELECT CodigoBarras, Producto, idCategoria, idSubcategoria, Precio
-                FROM catalogo 
-                WHERE Producto LIKE %s OR CodigoBarras LIKE %s
-                ORDER BY Producto
-                LIMIT 50
-            """
-            cursor.execute(query, (f"%{filtro}%", f"%{filtro}%"))
-        else:
-            query = """
-                SELECT CodigoBarras, Producto, idCategoria, idSubcategoria, Precio
-                FROM catalogo 
-                ORDER BY Producto
-                LIMIT 100
-            """
-            cursor.execute(query)
-
-        results = cursor.fetchall()
-        cursor.close()
+        where = " WHERE Producto LIKE %s OR CodigoBarras LIKE %s" if filtro else ""
+        params = (f"%{filtro}%", f"%{filtro}%") if filtro else ()
+        cursor.execute("SELECT COUNT(*) AS total FROM catalogo" + where, params)
+        total = cursor.fetchone()['total']
+        cursor.execute(
+            "SELECT CodigoBarras, Producto, idCategoria, idSubcategoria, Precio "
+            "FROM catalogo" + where + " ORDER BY Producto, CodigoBarras LIMIT %s OFFSET %s",
+            params + (limit, offset),
+        )
+        return cursor.fetchall(), total
+    finally:
+        if cursor is not None:
+            cursor.close()
         conn.close()
-        return results
-    except Error as e:
-        print(f"Error fetching productos: {e}")
-        return []
 
 
 def crear_merma_cabecera(merma_data: MermaCreate, id_usuario: int) -> Optional[int]:
